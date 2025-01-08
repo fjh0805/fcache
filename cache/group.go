@@ -10,6 +10,7 @@ type Group struct {
 	name      string
 	mainCache cache
 	getter    Getter
+	peers     PeerPicker
 }
 
 var mu sync.RWMutex
@@ -24,8 +25,8 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 	g := &Group{
 		name: name,
 		mainCache: cache{
-			name: "lru",
-			cacheBytes: cacheBytes,	
+			name:       "lru",
+			cacheBytes: cacheBytes,
 		},
 		getter: getter,
 	}
@@ -40,6 +41,13 @@ func getGroup(name string) *Group {
 	return g
 }
 
+func (g *Group) RegisterPeers(peers PeerPicker) {
+	if g.peers != nil {
+		panic("RegisterPeerPicker called more than once")
+	}
+	g.peers = peers
+}
+
 func (g *Group) Get(key string) (ByteView, error) {
 	if key == "" {
 		return ByteView{}, fmt.Errorf("key is empty")
@@ -52,16 +60,27 @@ func (g *Group) Get(key string) (ByteView, error) {
 }
 
 func (g *Group) load(key string) (ByteView, error) {
+	if g.peers != nil {
+		if peer, ok := g.peers.PickPeer(key); ok {
+			log.Printf("pick peer %v", peer)
+			bytes, err := peer.Get(g.name, key)
+			if err == nil {
+				return ByteView{bytes}, nil
+			}
+			return ByteView{}, err
+		}
+	}
 	return g.getLocally(key)
 }
 
+
 func (g *Group) getLocally(key string) (ByteView, error) {
-	v, err := g.getter.Get(key); 
+	v, err := g.getter.Get(key)
 	if err != nil {
 		return ByteView{}, err
 	}
 	value := ByteView{append([]byte{}, v...)}
-	
+
 	g.mainCache.put(key, value)
 	return ByteView{v}, nil
 }
