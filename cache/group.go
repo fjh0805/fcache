@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"sync"
+
+	"github.com/limerence-yu/fcache/singleflight.go"
 )
 
 type Group struct {
@@ -11,6 +13,7 @@ type Group struct {
 	mainCache cache
 	getter    Getter
 	peers     PeerPicker
+	loader    *singleflight.Group
 }
 
 var mu sync.RWMutex
@@ -29,6 +32,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 			cacheBytes: cacheBytes,
 		},
 		getter: getter,
+		loader: &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -60,19 +64,24 @@ func (g *Group) Get(key string) (ByteView, error) {
 }
 
 func (g *Group) load(key string) (ByteView, error) {
-	if g.peers != nil {
-		if peer, ok := g.peers.PickPeer(key); ok {
-			log.Printf("pick peer %v", peer)
-			bytes, err := peer.Get(g.name, key)
-			if err == nil {
-				return ByteView{bytes}, nil
+	v, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				log.Printf("pick peer %v", peer)
+				bytes, err := peer.Get(g.name, key)
+				if err == nil {
+					return ByteView{bytes}, nil
+				}
+				return ByteView{}, err
 			}
-			return ByteView{}, err
 		}
+		return g.getLocally(key)
+	})	
+	if err == nil {
+		return v.(ByteView), err
 	}
-	return g.getLocally(key)
+	return ByteView{}, err
 }
-
 
 func (g *Group) getLocally(key string) (ByteView, error) {
 	v, err := g.getter.Get(key)
