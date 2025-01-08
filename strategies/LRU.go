@@ -17,11 +17,7 @@ type entry struct {
 	value Value
 }
 
-type Value interface {
-	Len() int // 返回值所占用的内存大小
-}
-
-func New(maxBytes int64, onEvicted func(key string, value Value)) *cacheLRU {
+func NewLRU(maxBytes int64, onEvicted func(key string, value Value)) *cacheLRU {
 	return &cacheLRU{
 		maxBytes: maxBytes,
 		ll:       list.New(),

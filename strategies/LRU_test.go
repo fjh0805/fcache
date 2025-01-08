@@ -12,7 +12,7 @@ func (s String) Len() int {
 }
 
 func TestGet(t *testing.T) {
-	lru := New(int64(0), nil)
+	lru := NewLRU(int64(0), nil)
 	lru.Put("k1", String("v1"))
 	if v, ok := lru.Get("k1"); !ok || string(v.(String)) != "v1" {
 		t.Fatal("cache hit k1 = v1 failed")
@@ -26,7 +26,7 @@ func TestRemoveoldest(t *testing.T) {
 	k1, k2, k3 := "k1", "k23", "k3"
 	v1, v2, v3 := "v1", "v23", "v3"
 	maxBytes := len(k1 + k2 + v1 + v2) // 10
-	lru := New(int64(maxBytes), nil)
+	lru := NewLRU(int64(maxBytes), nil)
 	lru.Put(k1, String(v1))
 	lru.Put(k2, String(v2))
 	lru.Get(k1)
@@ -45,7 +45,7 @@ func TestOnEvicted(t *testing.T) {
 	k1, k2, k3 := "k1", "k23", "k345"
 	v1, v2, v3 := "v1", "v23", "v345"
 	maxBytes := len(k1 + k2 + v1 + v2) // 10
-	lru := New(int64(maxBytes), callback)
+	lru := NewLRU(int64(maxBytes), callback)
 	lru.Put(k1, String(v1))
 	lru.Put(k2, String(v2))
 	lru.Put(k3, String(v3))
