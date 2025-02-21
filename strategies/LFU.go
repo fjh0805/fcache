@@ -2,11 +2,14 @@ package strategies
 
 import (
 	"container/heap"
+	"log"
+	"sync"
 	"time"
 )
 
-// 最少使用
+// 最少使用,给每个kv添加一个新的参数cnt计算次数，次数一样时候，把最久的键值对删除
 type cacheLFU struct {
+	mu        sync.Mutex
 	maxBytes  int64
 	nBytes    int64
 	storage   map[string]*entryLFU
@@ -15,45 +18,60 @@ type cacheLFU struct {
 }
 
 type entryLFU struct {
-	key            string
-	value          Value
-	cnt            int
-	lastAccessTime int64
+	entry entry
+	cnt   int
 }
 
 func NewLFU(maxBytes int64, onEvicted func(key string, value Value)) *cacheLFU {
-	return &cacheLFU{
+	c := &cacheLFU{
 		maxBytes:  maxBytes,
 		nBytes:    0,
 		onEvicted: onEvicted,
 		storage:   make(map[string]*entryLFU),
 		minHeap:   &MinHeap{},
 	}
+	go func() {
+		tiker := time.NewTicker(2 * time.Minute)
+		defer tiker.Stop()
+		for {
+			<-tiker.C
+			c.Cleanup()
+			log.Println("定期处理过期缓存")
+		}
+	}()
+	return c
 }
 
 func (c *cacheLFU) Get(key string) (value Value, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if e, ok := c.storage[key]; ok {
 		e.cnt++
-		e.lastAccessTime = time.Now().UnixNano()
+		e.entry.TimeUpdate()
 		heap.Fix(c.minHeap, c.getKeyIndex(e))
-		return e.value, ok
+		return e.entry.value, ok
 	}
 	return
 }
 func (c *cacheLFU) Put(key string, value Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if e, ok := c.storage[key]; ok {
 		e.cnt++
-		e.lastAccessTime = time.Now().UnixNano()
-		c.nBytes = c.nBytes - int64(e.value.Len()) + int64(value.Len())
-		e.value = value
+		e.entry.TimeUpdate()
+		c.nBytes = c.nBytes - int64(e.entry.value.Len()) + int64(value.Len())
+		e.entry.value = value
 		heap.Fix(c.minHeap, c.getKeyIndex(e))
 	} else {
-		c.storage[key] = &entryLFU{
-			key:            key,
-			cnt:            1,
-			value:          value,
-			lastAccessTime: time.Now().UnixNano(),
+		kv := &entryLFU{
+			cnt: 1,
+			entry: entry{
+				key:   key,
+				value: value,
+			},
 		}
+		kv.entry.TimeUpdate()
+		c.storage[key] = kv
 		c.nBytes = c.nBytes + int64(value.Len()) + int64(len(key))
 		heap.Push(c.minHeap, c.storage[key])
 	}
@@ -63,19 +81,42 @@ func (c *cacheLFU) Put(key string, value Value) {
 }
 func (c *cacheLFU) Remove() {
 	item := heap.Pop(c.minHeap)
-	entry := item.(*entryLFU)
-	if entry != nil {
-		delete(c.storage, entry.key)
-		c.nBytes = c.nBytes - int64(entry.value.Len()) - int64(len(entry.key))
+	kv := item.(*entryLFU)
+	if kv != nil {
+		delete(c.storage, kv.entry.key)
+		c.nBytes = c.nBytes - int64(kv.entry.value.Len()) - int64(len(kv.entry.key))
 		if c.onEvicted != nil {
-			c.onEvicted(entry.key, entry.value)
+			c.onEvicted(kv.entry.key, kv.entry.value)
 		}
 	}
 }
 
+func (c *cacheLFU) Cleanup() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.minHeap.Len() == 0 {
+		return
+	}
+	var newHeap MinHeap
+	for _, item := range *c.minHeap {
+		if !item.entry.Expired() {
+			newHeap = append(newHeap, item)
+		} else {
+			delete(c.storage, item.entry.key)
+			c.nBytes = c.nBytes - int64(item.entry.value.Len()) - int64(len(item.entry.key))
+			if c.onEvicted != nil {
+				c.onEvicted(item.entry.key, item.entry.value)
+			}
+		}
+	}
+	*c.minHeap = newHeap
+	heap.Init(c.minHeap)
+}
+
 func (c *cacheLFU) getKeyIndex(item *entryLFU) int {
 	for i, cacheItem := range *c.minHeap {
-		if cacheItem.key == item.key {
+		if cacheItem.entry.key == item.entry.key {
 			return i
 		}
 	}
@@ -91,7 +132,8 @@ type MinHeap []*entryLFU
 func (h MinHeap) Len() int { return len(h) }
 func (h MinHeap) Less(a, b int) bool {
 	if h[a].cnt == h[b].cnt {
-		return h[a].lastAccessTime < h[b].lastAccessTime
+		//更久理当先被淘汰 a 在 b 之前
+		return h[a].entry.timeout.Before(h[b].entry.timeout) 
 	}
 	return h[a].cnt < h[b].cnt
 }

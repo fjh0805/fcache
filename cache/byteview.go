@@ -1,17 +1,17 @@
 package cache
 
 type ByteView struct {
-	b []byte
+	Bytes []byte
 }
 //实现Value接口
 func (v ByteView) Len() int {
-	return len(v.b)
+	return len(v.Bytes)
 }
 
 func (v ByteView) String() string {
-	return string(v.b)
+	return string(v.Bytes)
 }
 
 func (v ByteView) ByteSlice() []byte {
-	return append([]byte{}, v.b...)
+	return append([]byte{}, v.Bytes...)
 }

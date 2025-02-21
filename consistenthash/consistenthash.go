@@ -43,11 +43,11 @@ func (m *Map) Add(keys ...string) {
 func (m *Map) Get(key string) string {
 	hash := int(m.hash([]byte(key)))
 	//没找到符合条件的就是插入位置
-	// idx := sort.Search(len(m.keys), func(i int) bool {
-	// 	return hash <= m.keys[i]
-	// })
-	// idx %= len(m.keys)
-	idx := m.find(hash)
+	idx := sort.Search(len(m.keys), func(i int) bool {
+		return hash <= m.keys[i]
+	})
+	idx %= len(m.keys)
+	// idx := m.find(hash)
 	return m.hashMap[m.keys[idx]]
 }
 

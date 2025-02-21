@@ -9,7 +9,10 @@ import (
 	"strings"
 	"sync"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/limerence-yu/fcache/consistenthash"
+	cachepb "github.com/limerence-yu/fcache/cachepb"
 )
 
 const defaultBasePath = "/_fcache/"
@@ -29,8 +32,8 @@ type httpGetter struct {
 
 func NewHTTPPool(self string) *HTTPPool {
 	return &HTTPPool{
-		self:        self,
-		basePath:    defaultBasePath,
+		self:     self,
+		basePath: defaultBasePath,
 	}
 }
 
@@ -59,53 +62,54 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, p.basePath) {
 		panic("basePath error")
 	}
-	p.Log("r.URL.Path: %s, r.Host: %s", r.URL.Path, r.Host)
+	//p.Log("r.URL.Path: %s, r.Host: %s", r.URL.Path, r.Host)
 	p.Log("%s %s", r.Method, r.URL.Path)
 	part := strings.SplitN(r.URL.Path[len(p.basePath):], "/", 2)
 	groupName := part[0]
 	key := part[1]
-	group := getGroup(groupName)
+	group := GetGroup(groupName)
 	if group == nil {
 		http.Error(w, "no such group"+groupName, http.StatusNotFound)
 		return
 	}
 	v, err := group.Get(key)
+	body, err := proto.Marshal(&cachepb.Response{Value: v.ByteSlice()})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("group %s no such key %s", groupName, key), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	//application/octet-stream 是一种通用的二进制数据类型，用于传输任意类型的二进制数据，没有特定的结构或者格式，
 	//可以用于传输图片、音频、视频、压缩文件等任意二进制数据。
 	// HTTP库掌握的不行
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Write(v.ByteSlice())
+	w.Write(body)
 }
 
 func (p *HTTPPool) Log(format string, v ...interface{}) {
 	log.Printf("[server %s] %s", p.self, fmt.Sprintf(format, v...))
 }
 
-func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+func (h *httpGetter) Get(in *cachepb.Request, out *cachepb.Response) error {
 	u := fmt.Sprintf(
 		"%v%v/%v",
 		h.baseURL,
-		url.QueryEscape(group),
-		url.QueryEscape(key),
+		url.QueryEscape(in.GetGroup()),
+		url.QueryEscape(in.GetKey()),
 	)
 	res, err := http.Get(u)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned: %v", res.Status)
+		return fmt.Errorf("server returned: %v", res.Status)
 	}
 
 	bytes, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %v", err)
+	if err = proto.Unmarshal(bytes, out); err != nil {
+		return fmt.Errorf("decoding response body: %v", err)
 	}
 
-	return bytes, nil
+	return nil
 }

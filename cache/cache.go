@@ -6,30 +6,30 @@ import (
 	"github.com/limerence-yu/fcache/strategies"
 )
 
-type cache struct {
+type Cache struct {
 	mu         sync.Mutex
-	strategy   strategies.CacheStrategy
-	cacheBytes int64
-	name       string
+	Strategy   strategies.CacheStrategy
+	CacheBytes int64
+	Name       string
 }
 
-func (c *cache) get(key string) (value ByteView, ok bool) {
+func (c *Cache) Get(key string) (value ByteView, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.strategy == nil {
+	if c.Strategy == nil {
 		return
 	}
-	if v, ok := c.strategy.Get(key); ok {
+	if v, ok := c.Strategy.Get(key); ok {
 		return v.(ByteView), ok
 	}
 	return
 }
 
-func (c *cache) put(key string, value ByteView) {
+func (c *Cache) Put(key string, value ByteView) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.strategy == nil {
-		c.strategy = strategies.New(c.name, c.cacheBytes, nil)
+	if c.Strategy == nil {
+		c.Strategy = strategies.New(c.Name, c.CacheBytes, nil)
 	}
-	c.strategy.Put(key, value)
+	c.Strategy.Put(key, value)
 }

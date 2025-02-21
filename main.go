@@ -1,90 +1,81 @@
 package main
 
+// example.go file
+// 运行前，你需要在本地启动Etcd实例，作为服务中心。
 import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 
+	"github.com/limerence-yu/fcache/DB"
 	"github.com/limerence-yu/fcache/cache"
+	"github.com/limerence-yu/fcache/grpc"
+	"github.com/limerence-yu/fcache/registry"
+	"gorm.io/gorm"
 )
 
-var db = map[string]string{
-	"Tom":  "630",
-	"Jack": "589",
-	"Sam":  "567",
-}
+// todo sql
+// var mysql = map[string]string{
+// 	"Tom":  "630",
+// 	"Jack": "589",
+// 	"Sam":  "567",
+// }
+// group := grpc.NewGroup("scores", 2<<10, cache.GetterFunc(
+// 	func(key string) ([]byte, error) {
+// 		log.Println("[Mysql] search key", key)
+// 		if v, ok := mysql[key]; ok {
+// 			log.Printf("find key %s, value %s", key, v)
+// 			return []byte(v), nil
+// 		}
+// 		return nil, fmt.Errorf("%s not exist", key)
+// 	}))
 
-func createGroup() *cache.Group {
-	return cache.NewGroup("scores", 2<<10, cache.GetterFunc(
-		func(key string) ([]byte, error) {
-			log.Println("[SlowDB] search key", key)
-			if v, ok := db[key]; ok {
-				return []byte(v), nil
+func mysqlGetterFunc(db *gorm.DB) cache.GetterFunc {
+	return func(key string) ([]byte, error) {
+		var s DB.Student
+		err := db.Where("name = ?", key).First(&s).Error
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				log.Printf("name %s not found in mysql", key)
+				return nil, fmt.Errorf("%s not exist", key)
 			}
-			return nil, fmt.Errorf("%s not exist", key)
-		}))
+			log.Printf("error querying MySQL for name %s: %v", key, err)
+			return nil, fmt.Errorf("failed to get name %s from MySQL: %v", key, err)
+		}
+		log.Printf("mysql found name %s, value %s", key, s.Score)
+		return []byte(s.Score), nil
+	}
 }
 
-func startAPIServer(apiAddr string, f *cache.Group) {
-	http.Handle("/api", http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			key := r.URL.Query().Get("key")
-			view, err := f.Get(key)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(view.ByteSlice())
-		}))
-	log.Println("fontend server is running at", apiAddr)
-	log.Fatal(http.ListenAndServe(apiAddr[7:], nil))
-}
-
-func startCacheServer(addr string, addrs []string, f *cache.Group) {
-	peers := cache.NewHTTPPool(addr)
-	peers.Set(addrs...)
-	f.RegisterPeers(peers)
-	log.Println("cache is running at", addr)
-	log.Fatal(http.ListenAndServe(addr[7:], peers))
-}
+var (
+	port        = flag.Int("port", 9999, "port")
+	serviceName = "GroupCache"
+)
 
 func main() {
-	var port int
-	var api bool
-	flag.IntVar(&port, "port", 8001, "cache server port")
-	flag.BoolVar(&api, "api", false, "Start a api server?")
 	flag.Parse()
-
-	apiAddr := "http://localhost:9999"
-	addrMap := map[int]string{
-		8001: "http://localhost:8001",
-		8002: "http://localhost:8002",
-		8003: "http://localhost:8003",
+	db, _ := DB.Init()
+	// 新建cache实例,如果改为mysql回调函数要修改
+	group := grpc.NewGroup("scores", 2<<10, mysqlGetterFunc(db))
+	// New一个服务实例
+	addr := fmt.Sprintf("localhost:%d", *port)
+	updatechan := make(chan struct{}) //用于监控节点变化
+	svr, err := grpc.NewServer(updatechan, addr)
+	if err != nil {
+		log.Fatal(err)
 	}
-
-	var addrs []string
-	for _, v := range addrMap {
-		addrs = append(addrs, v)
+	go registry.WatchUpdate(updatechan, serviceName)
+	// 设置同伴节点IP(包括自己)
+	// todo: 这里的peer地址从etcd获取(服务发现)
+	addrs, err := registry.DiscoverPeer(serviceName)
+	log.Printf("get addrs %v from etcd", addrs)
+	if err != nil { //查询失败使用默认地址
+		addrs = []string{"localhost:9999"}
 	}
+	svr.SetPeers(addrs)
+	// 将服务与cache绑定 因为cache和server是解耦合的
+	group.RegisterSvr(svr)
+	log.Println("fcache is running at", addr)
 
-	f := createGroup()
-	//脚本会启动三个缓存服务器，其中一个既作为api服务器也作为缓存服务器
-	if api {
-		//开启一个服务，监听在 http://localhost:9999 上，并处理 /api 路径的请求。
-		//在这里f.Get(key)，实际上只有是api服务器的有的f才可以调用这里的方法
-		//对应的 ./server -port=8003 -api=1 &
-		//也就是说当你有一个这样的请求 curl "http://localhost:9999/api?key=Tom" 
-		//（服务器地址是http://localhost:9999，路径是/api）
-		//首先匹配到了，因此调用f.Get(key)，对应的group是属于8003，因此调用group里的get
-		//首先是检查自身cache是否有这个key
-		//没有就通过哈希环选节点得到peer,形式[http://localhost:8001/_fcache/],
-		//然后调用peer.Get，对应的也就是httpGetter.Get() u = http://localhost:8001/_fcache/group/key
-		//调用http.Get(u) -> ServeHTTP -> group.Get
-		//这里的group已经是8001的了，到了这里同样也是查询本地cache，但是选是不会选到自己了
-		//自己缓存没有就用回调函数，找到了就返回，最终返回到8003，8003再到9999
-		go startAPIServer(apiAddr, f)
-	}
-	startCacheServer(addrMap[port], []string(addrs), f)
+	svr.Start()
 }
