@@ -26,6 +26,23 @@ func EtcdDial(c *clientv3.Client, service string) (*grpc.ClientConn, error) {
 	return conn, err
 }
 
+// WatchUpdate 监听 etcd 中服务节点的变化
+// 当有节点增加或删除时，通过 updatechan 通知上层进行哈希环重建
+//
+// 监听流程：
+// 1. 连接 etcd 客户端
+// 2. 使用 Watch API 监听指定服务名称前缀的所有键
+// 3. 当检测到 PUT 事件（节点注册/更新）时，发送更新信号
+// 4. 当检测到 DELETE 事件（节点下线）时，发送更新信号
+// 5. 上层收到信号后，会重新从 etcd 获取所有存活节点并重建哈希环
+//
+// 节点变化检测机制：
+// - 使用 etcd 的 Watch API 实现实时监听
+// - 不区分增加和删除，统一触发重建
+// - 重建时会从 etcd 获取最新的完整节点列表
+// - 这样确保哈希环状态与 etcd 中的注册信息一致
+//
+// 注意：此函数会阻塞，应在单独的 goroutine 中调用
 func WatchUpdate(updatechan chan struct{}, serviceName string) {
 	cli, err := clientv3.New(defaultEtcdConfig)
 	if err != nil {
