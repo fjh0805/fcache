@@ -8,9 +8,19 @@ import (
 // TestHashRingReconstruction 演示哈希环的重建过程
 // 模拟节点添加场景，展示哈希环如何处理节点变化
 func TestHashRingReconstruction(t *testing.T) {
-	// 使用简单的哈希函数便于测试
+	// 使用简单但可靠的哈希函数便于测试
+	// 注意：这里只是为了测试演示，生产环境应使用 CRC32 等成熟的哈希函数
 	hash := func(data []byte) uint32 {
-		x, _ := strconv.Atoi(string(data))
+		s := string(data)
+		x, err := strconv.Atoi(s)
+		if err != nil {
+			// 对于非数字字符串，使用简单的字符求和作为哈希值
+			var sum uint32
+			for _, c := range s {
+				sum += uint32(c)
+			}
+			return sum
+		}
 		return uint32(x)
 	}
 

@@ -18,7 +18,7 @@ fcache 使用一致性哈希算法来实现分布式缓存的负载均衡。当�
 **数据结构：**
 ```go
 type Map struct {
-    replicas int            // 虚拟节点数量
+    replicas int            // 每个物理节点对应的虚拟节点数量
     hash     Hash            // 哈希函数
     keys     []int           // 已排序的虚拟节点哈希值
     hashMap  map[int]string  // 哈希值 -> 物理节点映射
@@ -94,12 +94,21 @@ Register 函数会：
 func Register(service string, addr string, stop chan error) error {
     // 创建租约
     resp, err := cli.Grant(context.Background(), 5)
+    if err != nil {
+        return fmt.Errorf("create lease failed: %v", err)
+    }
     
     // 注册服务
     err = etcdAdd(cli, resp.ID, service, addr)
+    if err != nil {
+        return fmt.Errorf("add etcd failed: %v", err)
+    }
     
     // 心跳保活
     ch, err := cli.KeepAlive(context.Background(), resp.ID)
+    if err != nil {
+        return fmt.Errorf("set keepalive failed: %v", err)
+    }
     // ...
 }
 ```
